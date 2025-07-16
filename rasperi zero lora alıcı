@@ -1,0 +1,74 @@
+import RPi.GPIO as GPIO
+import spidev
+import time
+
+# SPI başlat
+spi = spidev.SpiDev()
+spi.open(0, 0)  # SPI0, CS0 (GPIO8)
+spi.max_speed_hz = 5000000
+spi.mode = 0
+
+# GPIO pinleri
+RESET = 25
+DIO0 = 24
+
+GPIO.setmode(GPIO.BCM)
+GPIO.setup(RESET, GPIO.OUT)
+GPIO.setup(DIO0, GPIO.IN)
+
+def lora_write(addr, val):
+    spi.xfer2([addr | 0x80, val])
+
+def lora_read(addr):
+    return spi.xfer2([addr & 0x7F, 0x00])[1]
+
+def lora_reset():
+    GPIO.output(RESET, GPIO.LOW)
+    time.sleep(0.2)
+    GPIO.output(RESET, GPIO.HIGH)
+    time.sleep(0.2)
+
+def lora_setup():
+    lora_reset()
+    version = lora_read(0x42)
+    print("📟 LoRa Chip Versiyon:", hex(version))
+    if version != 0x12:
+        print("❌ LoRa modülü bulunamadı.")
+        return False
+
+    print("✅ LoRa modülü bulundu.")
+    lora_write(0x01, 0x80)  # Sleep
+    lora_write(0x01, 0x81)  # Standby
+    lora_write(0x1E, 0x74)  # ModemConfig3
+    lora_write(0x1D, 0x72)  # ModemConfig1
+    lora_write(0x0E, 0x00)  # FIFO TX base addr
+    lora_write(0x0F, 0x00)  # FIFO RX base addr
+    lora_write(0x01, 0x85)  # RX continuous mode
+    return True
+
+def lora_receive():
+    irq_flags = lora_read(0x12)
+    if irq_flags & 0x40:  # RX Done
+        current_addr = lora_read(0x10)
+        received_count = lora_read(0x13)
+        lora_write(0x0D, current_addr)
+        msg = ""
+        for _ in range(received_count):
+            msg += chr(lora_read(0x00))
+        lora_write(0x12, 0xFF)  # IRQ temizle
+        return msg
+    return None
+
+# -------------------------
+
+if lora_setup():
+    print("🔎 Dinleme başladı...")
+    try:
+        while True:
+            mesaj = lora_receive()
+            if mesaj:
+                print("📥 Alınan:", mesaj)
+            time.sleep(0.1)
+    except KeyboardInterrupt:
+        print("\n🛑 Durduruldu.")
+        GPIO.cleanup()
